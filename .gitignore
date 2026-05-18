@@ -1,0 +1,5 @@
+.idea/
+bin/
+obj/
+deployment/out/
+deployment/updater.exe

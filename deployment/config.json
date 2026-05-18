@@ -1,0 +1,29 @@
+{
+    "applicationName": "REX",
+    "initialVersion": "3.0.0",
+    "launchExecutable": "Rex.exe",
+    "windowIconPath": "../Rex/Resources/icon.ico",
+    "text": {
+        "windowTitle": "{ApplicationName} Updater"
+    },
+    "installation": {
+        "requireIntegrityVerification": true,
+        "processName": "Rex",
+        "keepLastVersions": 3,
+        "extractionLayout": "auto",
+        "allowFreshInstall": true,
+        "compressFiles": true
+    },
+    "requiredRuntimes": [
+        {
+            "name": "Microsoft.WindowsDesktop.App",
+            "version": "10.0.8",
+            "type": "windowsdesktop-runtime"
+        }
+    ],
+    "updateSource": {
+        "type": "github",
+        "repository": "depthbomb/rex",
+        "includePrerelease": false
+    }
+}
