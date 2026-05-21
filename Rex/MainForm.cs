@@ -93,10 +93,10 @@ public partial class MainForm : Form
 
         var fileMenu = new ToolStripMenuItem("File");
         fileMenu.DropDownItems.AddRange(
-            Item("New", Keys.Control | Keys.N, (_, _) => NewFile()),
+            Item("New", Keys.Control   | Keys.N, (_, _) => NewFile()),
             Item("Open…", Keys.Control | Keys.O, (_, _) => OpenResx()),
             new ToolStripSeparator(),
-            Item("Save", Keys.Control | Keys.S, (_, _) => SaveResx()),
+            Item("Save", Keys.Control     | Keys.S, (_,              _) => SaveResx()),
             Item("Save As…", Keys.Control | Keys.Shift | Keys.S, (_, _) => SaveResxAs()),
             new ToolStripSeparator(),
             Item("Close resource", Keys.None, (_, _) => CloseResource()),
@@ -107,9 +107,9 @@ public partial class MainForm : Form
         var editMenu = new ToolStripMenuItem("Edit");
         editMenu.DropDownItems.AddRange(
             Item("Add String…", Keys.Control | Keys.T, (_, _) => AddString()),
-            Item("Add File…",   Keys.Control | Keys.F, (_, _) => AddFile()),
+            Item("Add File…", Keys.Control   | Keys.F, (_, _) => AddFile()),
             new ToolStripSeparator(),
-            Item("Rename…",         Keys.F2,     (_, _) => RenameSelected()),
+            Item("Rename…", Keys.F2, (_,             _) => RenameSelected()),
             Item("Delete Selected", Keys.Delete, (_, _) => DeleteSelected())
         );
 
@@ -190,38 +190,67 @@ public partial class MainForm : Form
         _list.Clear();
         _currentFile = path;
 
-        var originalDir = Environment.CurrentDirectory;
+        var resxDirectory = Path.GetDirectoryName(path)!;
 
-        try
+        using var reader = new ResXResourceReader(path);
+        reader.UseResXDataNodes = true;
+
+        foreach (DictionaryEntry entry in reader)
         {
-            Environment.CurrentDirectory = Path.GetDirectoryName(path)!;
+            if (entry.Value is not ResXDataNode node)
+                continue;
 
-            using var reader = new ResXResourceReader(path);
-            reader.UseResXDataNodes = true;
+            object?      value   = null;
+            ResXFileRef? fileRef = null;
 
-            foreach (DictionaryEntry entry in reader)
+            try
             {
-                if (entry.Value is not ResXDataNode node) continue;
+                fileRef = node.FileRef;
 
-                object? value = null;
-                try { value = node.GetValue((ITypeResolutionService?)null); }
-                catch { /* ignored */ }
-
-                var resource = new ResourceEntry
+                if (fileRef is not null)
                 {
-                    Name    = node.Name,
-                    Value   = value,
-                    Comment = node.Comment,
-                    FileRef = node.FileRef
-                };
+                    var resolvedPath = fileRef.FileName;
 
-                _resources.Add(resource);
-                _list.AddItem(BuildRowItem(resource));
+                    if (!Path.IsPathRooted(resolvedPath))
+                    {
+                        resolvedPath = Path.GetFullPath(
+                            Path.Combine(resxDirectory, resolvedPath));
+                    }
+
+                    value = fileRef.TypeName switch
+                    {
+                        string t when t.Contains(typeof(Bitmap).FullName!, StringComparison.Ordinal) => Image.FromFile(resolvedPath),
+
+                        string t when t.Contains(typeof(Icon).FullName!, StringComparison.Ordinal) => new Icon(resolvedPath),
+
+                        _ => File.ReadAllBytes(resolvedPath)
+                    };
+
+                    fileRef = new ResXFileRef(
+                        resolvedPath,
+                        fileRef.TypeName,
+                        fileRef.TextFileEncoding);
+                }
+                else
+                {
+                    value = node.GetValue((ITypeResolutionService?)null);
+                }
             }
-        }
-        finally
-        {
-            Environment.CurrentDirectory = originalDir;
+            catch
+            {
+                /* Ignored */
+            }
+
+            var resource = new ResourceEntry
+            {
+                Name    = node.Name,
+                Value   = value,
+                Comment = node.Comment,
+                FileRef = fileRef
+            };
+
+            _resources.Add(resource);
+            _list.AddItem(BuildRowItem(resource));
         }
 
         _lastNamespace = ReadNamespaceFromDesigner(path) ?? _lastNamespace;
@@ -283,9 +312,30 @@ public partial class MainForm : Form
 
         foreach (var resource in _resources)
         {
-            var node = resource.FileRef is not null
-                ? new ResXDataNode(resource.Name, resource.FileRef)
-                : new ResXDataNode(resource.Name, resource.Value);
+            ResXDataNode node;
+
+            if (resource.FileRef is not null)
+            {
+                var filePath = resource.FileRef.FileName;
+
+                if (Path.IsPathRooted(filePath))
+                {
+                    var resxDirectory = Path.GetDirectoryName(path)!;
+
+                    filePath = Path.GetRelativePath(resxDirectory, filePath);
+                }
+
+                var normalizedRef = new ResXFileRef(
+                    filePath,
+                    resource.FileRef.TypeName,
+                    resource.FileRef.TextFileEncoding);
+
+                node = new ResXDataNode(resource.Name, normalizedRef);
+            }
+            else
+            {
+                node = new ResXDataNode(resource.Name, resource.Value);
+            }
 
             node.Comment = resource.Comment;
             writer.AddResource(node);
@@ -340,25 +390,50 @@ public partial class MainForm : Form
         switch (extension)
         {
             case ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif":
-                try { value = Image.FromFile(filePath); } catch { /*Ignored*/ }
+                try
+                {
+                    value = Image.FromFile(filePath);
+                }
+                catch
+                {
+                    /*Ignored*/
+                }
+
                 break;
             case ".ico":
-                try { value = new Icon(filePath); } catch { /*Ignored*/ }
+                try
+                {
+                    value = new Icon(filePath);
+                }
+                catch
+                {
+                    /*Ignored*/
+                }
+
                 break;
         }
 
         string typeQName = value switch
         {
-            Icon  _ => typeof(Icon).AssemblyQualifiedName!,
+            Icon _  => typeof(Icon).AssemblyQualifiedName!,
             Image _ => typeof(Bitmap).AssemblyQualifiedName!,
             _       => typeof(byte[]).AssemblyQualifiedName!
         };
+
+        var storedPath = filePath;
+
+        if (_currentFile is not null)
+        {
+            var resxDirectory = Path.GetDirectoryName(_currentFile)!;
+
+            storedPath = Path.GetRelativePath(resxDirectory, filePath);
+        }
 
         var resource = new ResourceEntry
         {
             Name    = name,
             Value   = value,
-            FileRef = new ResXFileRef(filePath, typeQName)
+            FileRef = new ResXFileRef(storedPath, typeQName)
         };
 
         _resources.Add(resource);
@@ -445,9 +520,19 @@ public partial class MainForm : Form
                 if (dialog.ShowDialog() != DialogResult.OK)
                     return;
 
-                resource.Value   = Image.FromFile(dialog.FileName);
+                resource.Value = Image.FromFile(dialog.FileName);
+
+                var storedPath = dialog.FileName;
+
+                if (_currentFile is not null)
+                {
+                    var resxDirectory = Path.GetDirectoryName(_currentFile)!;
+
+                    storedPath = Path.GetRelativePath(resxDirectory, dialog.FileName);
+                }
+
                 resource.FileRef = new ResXFileRef(
-                    dialog.FileName,
+                    storedPath,
                     typeof(Bitmap).AssemblyQualifiedName!);
 
                 _list.UpdateItem(e.Index, BuildRowItem(resource));
@@ -459,9 +544,9 @@ public partial class MainForm : Form
 
     private static ResourceListPanel.RowItem BuildRowItem(ResourceEntry resource)
     {
-        Image?  preview;
-        string  typeName;
-        string  displayValue;
+        Image? preview;
+        string typeName;
+        string displayValue;
 
         switch (resource.Value)
         {
@@ -532,7 +617,7 @@ public partial class MainForm : Form
 
         try
         {
-            var className = Path.GetFileNameWithoutExtension(_currentFile);
+            var className     = Path.GetFileNameWithoutExtension(_currentFile);
             var namespaceName = Prompt("Namespace", _lastNamespace);
             if (namespaceName is null)
                 return;
@@ -619,9 +704,9 @@ public partial class MainForm : Form
         form.MaximizeBox     = false;
         form.MinimizeBox     = false;
 
-        var box    = new TextBox { Left = 12, Top = 12, Width = 460, Text = initial };
-        var ok     = new Button { Text  = "OK", Left = 308, Top = 46, Width = 80, DialogResult = DialogResult.OK };
-        var cancel = new Button { Text  = "Cancel", Left = 396, Top = 46, Width = 80, DialogResult = DialogResult.Cancel };
+        var box    = new TextBox { Left = 12, Top        = 12, Width = 460, Text = initial };
+        var ok     = new Button { Text  = "OK", Left     = 308, Top  = 46, Width = 80, DialogResult = DialogResult.OK };
+        var cancel = new Button { Text  = "Cancel", Left = 396, Top  = 46, Width = 80, DialogResult = DialogResult.Cancel };
 
         form.Controls.AddRange(box, ok, cancel);
         form.AcceptButton = ok;
@@ -664,7 +749,8 @@ public partial class MainForm : Form
 
             int y = 12;
 
-            Add(Label("Name:", y)); y += 20;
+            Add(Label("Name:", y));
+            y += 20;
 
             _nameBox = new TextBox
             {
@@ -681,9 +767,9 @@ public partial class MainForm : Form
 
             _valueBox = new TextBox
             {
-                Left = 12, Top = y, Width = 472, Height = 72,
-                Multiline = true, ScrollBars = ScrollBars.Vertical,
-                AcceptsReturn = true, Text = value
+                Left          = 12, Top          = y, Width = 472, Height = 72,
+                Multiline     = true, ScrollBars = ScrollBars.Vertical,
+                AcceptsReturn = true, Text       = value
             };
 
             Add(_valueBox);
@@ -697,7 +783,7 @@ public partial class MainForm : Form
             Add(_commentBox);
             y += 38;
 
-            var ok     = new Button { Text = "OK",     Left = 316, Width = 80, Top = y, DialogResult = DialogResult.OK };
+            var ok     = new Button { Text = "OK", Left     = 316, Width = 80, Top = y, DialogResult = DialogResult.OK };
             var cancel = new Button { Text = "Cancel", Left = 404, Width = 80, Top = y, DialogResult = DialogResult.Cancel };
 
             Add(ok);
